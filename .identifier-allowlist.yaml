@@ -1,0 +1,84 @@
+# Identifiers that look real and are accounted for.
+#
+# ⛔ Every entry is a CLAIM. `scripts/check_identifier_hygiene.py` fails the
+# build on a globally-administered MAC that is not listed here, and fails again
+# if a listed one leaves the tree — a reason nobody can check is not a reason.
+#
+# Reviewed 2026-09-16: all 70 were inspected individually, not pattern-matched.
+# The categories below are the finding, not the method.
+#
+# ⚠️ This file is NOT a place to park a real capture. If an identifier came off
+# a radio it does not belong in a public repository, and no reason written here
+# makes it acceptable.
+#
+# format:  <mac>: <reason>
+00:0c:41:82:b2:53: Wireshark public wpa-Induction.pcap sample; provenance in tests/test_kismet_real_capture.py
+00:0c:41:82:b2:55: Wireshark public wpa-Induction.pcap sample; provenance in tests/test_kismet_real_capture.py
+00:0d:93:82:36:3a: Wireshark public wpa-Induction.pcap sample; provenance in tests/test_kismet_real_capture.py
+00:0f:66:16:94:73: Wireshark public wpa-Induction.pcap sample; provenance in tests/test_kismet_real_capture.py
+00:11:22:33:44:55: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:11:22:33:44:99: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:13:37:11:22:33: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:13:37:99:88:77: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:13:37:aa:bb:cc: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:13:37:ab:cd:ef: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:13:37:de:ad:be: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:13:38:aa:bb:cc: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:1a:7d:da:71:11: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:1a:7d:da:71:99: synthetic test placeholder; hand-written NIC portion, never off a radio
+00:1d:df:99:88:77: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+00:25:df:88:19:22: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+11:00:00:00:00:01: synthetic test placeholder; hand-written NIC portion, never off a radio
+11:11:11:11:11:11: synthetic test placeholder; hand-written NIC portion, never off a radio
+11:22:33:44:55:01: synthetic test placeholder; hand-written NIC portion, never off a radio
+11:22:33:44:55:66: synthetic test placeholder; hand-written NIC portion, never off a radio
+11:22:33:44:e7:89: synthetic test placeholder; hand-written NIC portion, never off a radio
+24:a4:3c:cc:11:22: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+3c:5a:b4:11:22:33: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:00: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:01: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:02: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:03: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:04: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:05: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:06: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:07: synthetic test placeholder; hand-written NIC portion, never off a radio
+3c:5a:b4:dd:ee:08: synthetic test placeholder; hand-written NIC portion, never off a radio
+44:00:00:00:00:04: synthetic test placeholder; hand-written NIC portion, never off a radio
+44:55:66:73:00:01: synthetic test placeholder; hand-written NIC portion, never off a radio
+7c:67:a2:33:44:55: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+88:88:88:00:00:02: synthetic test placeholder; hand-written NIC portion, never off a radio
+99:88:77:66:55:00: synthetic test placeholder; hand-written NIC portion, never off a radio
+99:99:99:00:00:01: synthetic test placeholder; hand-written NIC portion, never off a radio
+99:99:99:99:99:99: synthetic test placeholder; hand-written NIC portion, never off a radio
+a4:83:e7:01:23:45: synthetic test placeholder; hand-written NIC portion, never off a radio
+a4:83:e7:11:22:33: synthetic test placeholder; hand-written NIC portion, never off a radio
+a4:83:e7:55:55:55: synthetic test placeholder; hand-written NIC portion, never off a radio
+a4:83:e7:de:ad:be: synthetic test placeholder; hand-written NIC portion, never off a radio
+ac:de:00:00:00:00: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:00:00:00: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:00:00:01: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:00:00:02: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:00:11:22: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:00:11:23: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:00:11:25: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:00:11:26: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:01:00:00: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:11:22:01: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:11:22:02: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:11:22:33: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:11:22:34: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:77:88:99: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+ac:de:48:99:99:99: IEEE AC-DE-48 private/documentation OUI; assigned to nobody
+b4:1e:52:aa:11:01: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+b8:27:eb:01:02:03: synthetic test placeholder; hand-written NIC portion, never off a radio
+b8:27:eb:11:22:33: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+c0:ff:ee:00:11:22: synthetic test placeholder; hand-written NIC portion, never off a radio
+c0:ff:ee:00:11:33: synthetic test placeholder; hand-written NIC portion, never off a radio
+cc:cc:cc:cc:cc:cc: synthetic test placeholder; hand-written NIC portion, never off a radio
+cc:dd:ee:ff:00:11: synthetic test placeholder; hand-written NIC portion, never off a radio
+dc:a6:32:aa:bb:cc: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+dd:dd:dd:dd:dd:dd: synthetic test placeholder; hand-written NIC portion, never off a radio
+dd:ee:ff:11:22:33: synthetic test placeholder; hand-written NIC portion, never off a radio
+f0:9f:c2:55:66:77: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+f4:f5:e8:dd:ee:ff: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised

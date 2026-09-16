@@ -1236,8 +1236,11 @@ was stopped for it, which is not a state the daemon can ship in.
   `kismet_site.conf` so Kismet keeps `hci0`, and make the matching edit to
   `kismet_sources` in `/etc/lynceus/lynceus.yaml`, which currently lists both.
 - **Notes**: adapter identity is easy to invert and worth stating once.
-  `hci1` is the Intel, `28:C5:D2:0A:6D:D2`, HCI 5.3; `hci0` is the Realtek,
-  `3C:78:95:9B:8A:EA`, HCI 5.1. Also on that rig config, and harmless but
+  `hci1` is the Intel, HCI 5.3; `hci0` is the Realtek, HCI 5.1. ⛔ Their MACs
+  were written here and are now withheld — this file is published, and an
+  adapter address is broadcast on air and indexed by public wardriving
+  datasets, so it is a locatable identifier for the rig. Read them with
+  `hciconfig -a` on the rig itself. Also on that rig config, and harmless but
   worth tidying in the same pass: `kismet_sources` lists the Wi-Fi adapter
   twice, and the file carries no `ble_bridge` key at all, so the
   `BleBridgeConfig` defaults govern (`enabled: False`). Note too that
@@ -1410,7 +1413,7 @@ The bridge's ODID path was decoded end to end from a real over-the-air advert
 on this hardware. Not a fixture, not a unit test: a spec-conformant ASTM F3411
 legacy advert transmitted by one adapter and received by another.
 
-    21:35:46  3C:78:95:9B:8A:EA  rssi=-26  len=27  serial='LYNCEUSLOOPBACK01'
+    21:35:46  <hci0 adapter MAC, withheld>  rssi=-26  len=27  serial='LYNCEUSLOOPBACK01'
     service data 0000fffa-... = 0d0002124c594e434555534c...
 
 ⇒ Independently witnessed before the receive was trusted: nRF Connect on a
