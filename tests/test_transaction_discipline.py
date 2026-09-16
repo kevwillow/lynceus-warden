@@ -27,8 +27,8 @@ So this guard's unit is *the application*, and the rule outside ``db.py`` is:
 from __future__ import annotations
 
 import ast
-import textwrap
 import re
+import textwrap
 import threading
 from pathlib import Path
 
