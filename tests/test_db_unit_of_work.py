@@ -420,3 +420,95 @@ def test_run_inside_an_open_unit_is_refused_and_does_not_deadlock(tmp_path):
             with pytest.raises(RuntimeError, match="nest|already open"):
                 db.run(lambda conn: conn.execute("SELECT 1"), deadline_seconds=5)
         assert db._txn_depth == 0
+
+
+def test_a_readonly_run_does_not_take_the_write_lock(tmp_path):
+    """⛔ ``run()`` without a read-only form turns a working read into a 500.
+
+    Measured before this existed, against an 8s cross-process write hold:
+
+        main    RETURNED 0 in 0.00s,  fn invoked 1x
+        run()   RAISED database is locked after 5.00s, fn invoked 0x
+
+    Pure loss: nothing is written, so no atomicity is bought — the caller pays
+    the deadline plus a full ``busy_timeout`` and gets an exception where it
+    used to get data. ``SPEC_unit_of_work.md`` §8 already says read-only web
+    routes get ``unit(readonly=True)``; ``run()`` is the retryable form of the
+    same primitive and needs the same door.
+    """
+    import sqlite3 as _sq
+
+    path = str(tmp_path / "ro.db")
+    db = Database(path)
+    db._conn.execute("CREATE TABLE k(id INTEGER PRIMARY KEY, v INT)")
+    db._conn.execute("INSERT INTO k VALUES (1, 10)")
+    db._conn.commit()
+
+    other = _sq.connect(path, timeout=0.5)
+    seen = {}
+
+    def body(conn):
+        # ⚠️ Read FIRST. A plain `BEGIN` is DEFERRED, so the read snapshot is
+        # taken by the first statement that reads, not by the BEGIN itself.
+        # Writing this the other way round measures nothing.
+        first = conn.execute("SELECT v FROM k WHERE id = 1").fetchone()[0]
+        # A writer on a SEPARATE connection must get through while this
+        # read-only unit is open. Under BEGIN IMMEDIATE it would be blocked.
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("UPDATE k SET v = 99 WHERE id = 1")
+            other.commit()
+            seen["other"] = "WROTE"
+        except _sq.OperationalError as exc:
+            seen["other"] = f"BLOCKED: {exc}"
+        return first, conn.execute("SELECT v FROM k WHERE id = 1").fetchone()[0]
+
+    first, second = db.run(body, deadline_seconds=5, readonly=True)
+
+    assert seen["other"] == "WROTE", (
+        "a read-only run() took the write lock, so a concurrent writer was "
+        f"blocked: {seen['other']}"
+    )
+    assert (first, second) == (10, 10), (
+        "the read-only unit is not a consistent snapshot: it saw the other "
+        f"writer's commit mid-body ({first} then {second})"
+    )
+    other.close()
+
+
+def test_a_WRITING_run_still_takes_the_write_lock(tmp_path):
+    """⛔ The opposite direction: adding ``readonly`` must not weaken the default.
+
+    If ``run()`` stopped taking the write lock by default, every caller would
+    silently go back to the read-decide-write window this primitive exists to
+    close — a regression that no test asserting "it returned a value" would
+    catch.
+    """
+    import sqlite3 as _sq
+
+    path = str(tmp_path / "rw.db")
+    db = Database(path)
+    db._conn.execute("CREATE TABLE k(id INTEGER PRIMARY KEY, v INT)")
+    db._conn.execute("INSERT INTO k VALUES (1, 10)")
+    db._conn.commit()
+
+    other = _sq.connect(path, timeout=0.5)
+    seen = {}
+
+    def body(conn):
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("UPDATE k SET v = 99 WHERE id = 1")
+            other.commit()
+            seen["other"] = "WROTE"
+        except _sq.OperationalError as exc:
+            seen["other"] = f"BLOCKED: {exc}"
+        conn.execute("UPDATE k SET v = 11 WHERE id = 1")
+
+    db.run(body, deadline_seconds=5)  # default: writing
+
+    assert seen["other"].startswith("BLOCKED"), (
+        "a writing run() did NOT hold the write lock across its body; the "
+        f"lost-update window is open again: {seen['other']}"
+    )
+    other.close()
