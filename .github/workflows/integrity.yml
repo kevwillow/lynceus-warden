@@ -273,3 +273,53 @@ jobs:
           printf 'linting %d workflow(s):\n' "${#wf[@]}"
           printf '  %s\n' "${wf[@]}"
           ./actionlint -no-color -oneline "${wf[@]}"
+
+  # ⛔ This repository is public and its subject is recording identifiers that
+  # belong to other people. Its OPSEC discipline was entirely human -- a
+  # filename convention, a commit message, a docstring -- until this gate. On
+  # its first run it found both of the development rig's Bluetooth adapter MACs
+  # published in BACKLOG.md.
+  identifier-hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      # ⚠️ No `pip install -e .`, and the check imports NOTHING from the
+      # package -- stdlib and `git` only. An earlier version imported two
+      # constants from `lynceus.rules` and died here with ModuleNotFoundError
+      # (that module needs PyYAML), which is the failure mode this now avoids:
+      # a hygiene gate must not be silenceable by an unrelated packaging
+      # problem. `tests/test_identifier_hygiene_gate.py` asserts the inlined
+      # constants have not drifted from the product's.
+      - name: No unexplained device identifier is committed
+        run: python scripts/check_identifier_hygiene.py
+
+      # ⭐ The gate must be able to FAIL. A hygiene check that silently stops
+      # scanning -- an empty file list, a broken regex, a bad path -- reports
+      # "OK" and reads exactly like a clean tree. Plant a real-vendor MAC and
+      # require a non-zero exit before trusting the green above.
+      - name: Prove the gate is not vacuous
+        run: |
+          set -euo pipefail
+          # ⛔ Assembled from halves. A whole MAC literal written here would be
+          # committed IN THIS FILE, and the gate -- correctly -- would flag the
+          # workflow itself and fail forever.
+          HI="a0:88:69"; LO="1f:2c:44"
+          PROBE="tests/fixtures/_vacuity_probe.json"
+          printf '{"mac":"%s:%s"}\n' "$HI" "$LO" > "$PROBE"
+          # ⛔ `git add -N`, because the scanner's universe is `git ls-files`
+          # and an UNTRACKED plant is invisible to it -- the probe would report
+          # a passing gate and fail this step for the wrong reason.
+          git add -N "$PROBE"
+          if python scripts/check_identifier_hygiene.py; then
+            echo "::error::the hygiene gate PASSED with a planted real-vendor MAC; it is not checking anything"
+            git rm -q -f --cached "$PROBE" || true; rm -f "$PROBE"
+            exit 1
+          fi
+          git rm -q -f --cached "$PROBE" || true
+          rm -f "$PROBE"
+          echo "gate rejected the plant, as it must"
