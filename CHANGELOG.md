@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`Database.run()` retried writes without making them atomic.** It opened a
+  plain transaction, which `sqlite3` begins lazily on the first write — so a
+  `SELECT` before that write ran outside the transaction entirely. A caller
+  doing read-decide-write got a durable write built on a stale read, which is
+  the exact lost update the unit-of-work primitive exists to close; retrying
+  only made it happen again more reliably. `run()` now opens a full unit, so
+  the read, the decision and the write share one transaction with the write
+  lock taken up front.
+
+  ⭐ **`run(..., readonly=True)` for callables that only read.** Without it a
+  read-only caller under contention paid the whole retry deadline and then
+  raised, where a plain read would have returned immediately — and its callable
+  never ran at all. A read-only unit takes no write lock and cannot block a
+  writer.
+
+  ⚠️ **A writing `run()` holds the write lock for the whole of its callable**,
+  not just its writes. That is what taking the lock up front means, and it is
+  the cost of the guarantee: a callable that does slow work in the middle can
+  push another process past its timeout and cost it a write. Read, decide,
+  write, return.
+
 - **The BLE bridge's failure handler could crash-loop the daemon.** Starting the
   bridge records its status; when that write failed, the handler recorded the
   failure with *another write to the same database* — the resource whose
