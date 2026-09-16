@@ -70,7 +70,14 @@ _SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".
 # every row is a published ALPR/surveillance identifier with a source_url. It is
 # excluded by path, and that exclusion is itself listed here rather than hidden
 # in a regex.
-_SKIP_PATHS = {"src/lynceus/data/default_watchlist.csv"}
+_SKIP_PATHS = {
+    "src/lynceus/data/default_watchlist.csv",
+    # ⛔ The allowlist itself. It is a tracked file listing every allowlisted
+    # MAC, so scanning it makes each one "present in the tree" and the stale
+    # check `set(allow) - seen` is EMPTY BY CONSTRUCTION -- it can never fire.
+    # Caught by planting a stale entry and watching the check report OK.
+    ".identifier-allowlist.yaml",
+}
 
 
 def _tracked_files() -> list[str]:
