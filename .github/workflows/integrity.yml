@@ -310,7 +310,10 @@ jobs:
           # workflow itself and fail forever.
           HI="a0:88:69"; LO="1f:2c:44"
           PROBE="tests/fixtures/_vacuity_probe.json"
-          printf '{"mac":"%s:%s"}\n' "$HI" "$LO" > "$PROBE"
+          # ⛔ BOTH classes. A probe that only plants a MAC leaves the SSID half
+          # of the gate unproven, and an SSID scan that silently stops matching
+          # fields reports OK exactly like a clean tree.
+          printf '{"mac":"%s:%s","ssid":"ProbeNet-%s"}\n' "$HI" "$LO" "$RANDOM" > "$PROBE"
           # ⛔ `git add -N`, because the scanner's universe is `git ls-files`
           # and an UNTRACKED plant is invisible to it -- the probe would report
           # a passing gate and fail this step for the wrong reason.
