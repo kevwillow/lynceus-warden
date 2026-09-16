@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The BLE bridge's failure handler could crash-loop the daemon.** Starting the
+  bridge records its status; when that write failed, the handler recorded the
+  failure with *another write to the same database* — the resource whose
+  unavailability was usually the cause. The second write failed the same way and
+  escaped before the poll loop's protective boundary, so the process exited and
+  `Restart=on-failure` brought it straight back into the same condition. An
+  optional add-on could therefore take Kismet polling — the primary function —
+  down every five seconds, and permanently on a full disk.
+
+  ⭐ **The handler also lost track of a bridge that was already running.** When
+  the status write was what failed, the thread had already started, and clearing
+  the handles meant shutdown could not stop it: a live scanner nobody held a
+  reference to, while the database reported it as failed. A third instance sat
+  inside the start helper, where a logging call between starting the thread and
+  returning it could orphan a scanner before the caller ever received it.
+
+  ⛔ **The log named a cause that was not the cause.** "BLE bridge failed to
+  start; continuing without it" was printed both when nothing had started and
+  when the bridge was running fine. Those two cases are now distinguished, and
+  the message only claims a start failure when there was one.
+
+- **A failed `Database.unit()` entry wedged the database permanently.** The
+  transaction-depth counter was incremented before the block that restores it,
+  so a connection error while opening a unit left the count stuck. Every
+  subsequent transaction on that `Database` was then refused with "already open
+  on this thread" — on any thread, naming a cause that had nothing to do with
+  the real failure. A second instance of the same shape sat in the restore path
+  itself.
+
+### Changed
+
+- **Intercepted duplicate alerts are now visible in the log.** Three guards stop
+  races that would otherwise tell an operator the same thing twice, or re-send
+  an escalation they had just cleared. Two of them logged at `DEBUG` and the
+  third logged nothing at all, while the default log level is `INFO` — so they
+  could fire constantly in a normal deployment with nobody able to tell.
+
+  Each now emits one `INFO` line carrying the token `race-intercepted` and a
+  `site=` discriminator, so the rate is countable:
+
+  ```
+  journalctl -u lynceus | grep -c race-intercepted
+  ```
+
+  ⭐ `INFO` rather than a warning, deliberately: an intercepted race is a guard
+  working correctly. It is worth counting, not worth alarming about.
+
 ## [1.4.0] - 2026-09-03
 
 ### Added
