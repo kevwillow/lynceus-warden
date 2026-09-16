@@ -4389,6 +4389,48 @@ hardened regardless of reachability.
 
 ⛔ **Do not decide these unilaterally.** Each changes behaviour for existing deployments.
 
+### ✅ DECIDED 2026-09-16 — the rig's adapter MACs stay in history, and here is why
+
+The identifier-hygiene gate found both Bluetooth adapter MACs of the development rig published in
+`BACKLOG.md`, one beside an on-air capture line. They are redacted at HEAD. **They remain in
+history and that is deliberate.**
+
+**What the exposure actually is, measured not argued.** A scan of every commit on every ref found
+217 distinct MACs, of which 11 are globally administered and unaccounted for at HEAD:
+
+| what | n | detail |
+|---|---|---|
+| the rig's own adapters | 3 | `3C:78:95` Realtek, `28:C5:D2` Intel, `DC:41:A9` an earlier `hci1` |
+| published surveillance infrastructure | 7 | Flock Safety ALPR, Hikvision, Tiandy CCTV — each with a `source_url`. This is the product's DATA |
+| synthetic | 1 | a `11:22:33:…` placeholder from an old test row |
+
+⭐ **Zero third-party personal devices.** Nothing belonging to a neighbour or a passer-by. That is
+the fact that would have forced a rewrite, and it is absent.
+
+**Why not rewrite anyway.** The cost is not the forks — there are none. It is that
+`docs/AUDIT_REGISTER.md` cites **75 resolvable commit SHAs**, `BACKLOG.md` 17 and `CHANGELOG.md` 4.
+That chain of citations is what makes this register evidence rather than assertion. `git filter-repo`
+emits an old→new map so they COULD be rewritten mechanically, but every rewrite is an opportunity to
+silently corrupt the one artefact the project's credibility rests on — and
+[[a-recovery-path-never-run-is-an-assumption]] records a delete-and-recreate in this very project
+that destroyed the thing it was meant to repair.
+
+⇒ **A documented decision is a better artefact than a silently clean history.** "A gate was built,
+it found our own leak on its first run, HEAD was redacted and the rewrite was declined for stated
+reasons" demonstrates the discipline operating. A clean history demonstrates nothing.
+
+**What would reopen this:** a third-party device identifier found in history, or evidence that
+either adapter appears in a public wardriving dataset with a location. Neither is true today; the
+first was checked, the second has not been and is a lookup anyone can run.
+
+⭐ **The gate caught this very entry being written.** The first draft quoted the synthetic MAC in
+full; the check refused it. Writing a complete address in prose is the habit that put the rig's
+adapters in `BACKLOG.md` in the first place, so the gate declining to make an exception for its own
+decision record is the correct behaviour, not an inconvenience.
+
+⚠️ **Known limit of the gate:** it scans file contents, not commit messages. `DC:41:A9` lives only
+in a commit message, which is why the HEAD scan never saw it.
+
 ### 0. ⭐ Finding 52's residual — read→decide→write is unprotected application-wide. **Kev's call, spans all three tracks.**
 
 **Input written 2026-08-19 by session 2, at `61efb0a`. A proposal, not a merge — nothing here has

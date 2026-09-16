@@ -34,16 +34,22 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "src"))
 
-from lynceus.rules import (  # noqa: E402
-    _RESERVED_MAC_PREFIXES_TWO_OCTET,
-    _RESERVED_OUI_PREFIXES_EXACT,
-)
+# ⛔ INLINED, not imported from `lynceus.rules`, and this is deliberate after
+# getting it wrong once: importing that module pulls its whole import chain
+# (it needs PyYAML), so the gate died with ModuleNotFoundError in a CI job that
+# had not installed the package. A hygiene gate that depends on the package
+# installing correctly can be silenced by an unrelated packaging failure.
+#
+# These are IEEE facts rather than product policy, so they do not drift -- but
+# "does not drift" is a claim, so `tests/test_identifier_hygiene_gate.py`
+# asserts they still equal the product's own sets, where the full environment
+# IS available.
+_RESERVED_OUI_PREFIXES_EXACT = frozenset({"00:00:00", "ff:ff:ff", "01:00:5e"})
+_RESERVED_MAC_PREFIXES_TWO_OCTET = frozenset({"33:33"})
 
 
 def _could_identify_a_real_device(mac: str) -> bool:
