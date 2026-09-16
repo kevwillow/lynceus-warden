@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import re
+import textwrap
 import threading
 from pathlib import Path
 
@@ -237,6 +238,62 @@ def test_no_module_outside_db_writes_through_the_raw_connection():
     )
 
 
+# ⛔ BOTH block openers, not just `transaction()`. `unit()` opens a block with
+# exactly the same hazard -- an inner block's exit COMMITS the connection -- and
+# a guard keyed on the name "transaction" alone silently loses every caller the
+# moment it migrates onto `unit()`, with nothing turning red to say so.
+# `Database.run` was the first such migration (`db.py`, the `with self.unit()`
+# inside the retry loop) and would have left this universe unnoticed.
+_BLOCK_OPENERS = frozenset({"transaction", "unit"})
+
+
+def _offenders_in(source: str, rel: str) -> tuple[list[str], int]:
+    """Every ``Database`` method called from inside a transaction/unit block.
+
+    Extracted so the predicate can be exercised against SYNTHETIC source. A
+    guard whose only input is ``src/`` can only ever be proven by breaking
+    ``src/``, and this one was silently weakened once already — see
+    ``test_a_unit_nested_in_a_transaction_is_still_caught``.
+    """
+    offenders: list[str] = []
+    scanned = 0
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.With):
+            continue
+        receivers = {
+            item.context_expr.func.value.id
+            for item in node.items
+            if isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Attribute)
+            and item.context_expr.func.attr in _BLOCK_OPENERS
+            and isinstance(item.context_expr.func.value, ast.Name)
+        }
+        if not receivers:
+            continue
+        # ⛔ Exempt the block's OWN opener call, by NODE IDENTITY -- never by
+        # name. `ast.walk(node)` yields the With's own `db.transaction()` call,
+        # which must not be reported as an offender against itself. Exempting
+        # the NAME instead lets a genuine nesting bug through: `db.unit()`
+        # inside `with db.transaction():` is refused at RUNTIME and was
+        # silently unflagged here, which is how this guard was weakened the
+        # moment `unit` joined the opener set.
+        own_opener_calls = {id(item.context_expr) for item in node.items}
+        scanned += 1
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and isinstance(inner.func.value, ast.Name)
+                and inner.func.value.id in receivers
+                and id(inner) not in own_opener_calls
+            ):
+                offenders.append(
+                    f"{rel}:{inner.lineno} calls "
+                    f"{inner.func.value.id}.{inner.func.attr}()"
+                )
+    return offenders, scanned
+
+
 def test_nothing_calls_a_database_method_from_inside_a_transaction_block():
     """⛔ ``transaction()`` refuses to nest ITSELF. It cannot refuse this.
 
@@ -257,33 +314,17 @@ def test_nothing_calls_a_database_method_from_inside_a_transaction_block():
     it, the fix is to pass ``conn`` down — not to relax this.
     """
     offenders: list[str] = []
+    scanned = 0
     for path in sorted(SRC.rglob("*.py")):
         rel = path.relative_to(SRC).as_posix()
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.With):
-                continue
-            receivers = {
-                item.context_expr.func.value.id
-                for item in node.items
-                if isinstance(item.context_expr, ast.Call)
-                and isinstance(item.context_expr.func, ast.Attribute)
-                and item.context_expr.func.attr == "transaction"
-                and isinstance(item.context_expr.func.value, ast.Name)
-            }
-            if not receivers:
-                continue
-            for inner in ast.walk(node):
-                if (
-                    isinstance(inner, ast.Call)
-                    and isinstance(inner.func, ast.Attribute)
-                    and isinstance(inner.func.value, ast.Name)
-                    and inner.func.value.id in receivers
-                    and inner.func.attr != "transaction"
-                ):
-                    offenders.append(
-                        f"{rel}:{inner.lineno} calls "
-                        f"{inner.func.value.id}.{inner.func.attr}()"
-                    )
+        found, n = _offenders_in(path.read_text(encoding="utf-8"), rel)
+        offenders.extend(found)
+        scanned += n
+    assert scanned, (
+        "the scan found NO transaction-or-unit block in src/, so this guard is "
+        "asserting nothing. Its universe is derived from the method names in "
+        f"{sorted(_BLOCK_OPENERS)}; if a block opener was renamed, rename it here too."
+    )
     assert not offenders, (
         f"a Database method is called from inside a transaction block, which "
         f"COMMITS that block's partial work when the inner one exits: {offenders}. "
@@ -444,3 +485,53 @@ def test_a_DIFFERENT_thread_is_never_refused_it_simply_waits_its_turn(tmp_path):
     )
     assert counts == {"A": 20, "B": 20}, counts
     db.close()
+
+
+def test_a_unit_nested_in_a_transaction_is_still_caught():
+    """⛔ The guard's universe must survive its own widening.
+
+    When ``unit`` joined ``_BLOCK_OPENERS`` the inner exemption was widened
+    with it, from ``!= "transaction"`` to ``not in _BLOCK_OPENERS`` -- and that
+    silently stopped catching ``db.unit()`` inside ``with db.transaction():``,
+    which ``unit()`` refuses at RUNTIME. The outer widening was necessary; the
+    inner one was not, and nothing in ``src/`` contains the shape, so the whole
+    suite stayed green while the catch was gone.
+
+    ⇒ Exempt the block's own opener by NODE IDENTITY, and prove it here rather
+    than by waiting for someone to write the bug.
+    """
+    nested = textwrap.dedent(
+        """
+        def f(db):
+            with db.transaction() as conn:
+                conn.execute("SELECT 1")
+                with db.unit() as inner:
+                    inner.execute("SELECT 1")
+        """
+    )
+    offenders, scanned = _offenders_in(nested, "planted.py")
+    assert scanned, "the synthetic block was not scanned at all"
+    assert any("db.unit()" in o for o in offenders), (
+        "a unit() nested inside a transaction() block was NOT flagged; the "
+        f"guard's exemption is matching a name rather than the block: {offenders}"
+    )
+
+
+def test_a_blocks_own_opener_is_not_reported_against_itself():
+    """⛔ The opposite direction: the exemption must still exempt.
+
+    Node identity is only correct if it keeps exempting the ordinary case. A
+    plain ``with db.transaction() as conn:`` doing nothing but SQL must report
+    NOTHING -- otherwise every legitimate block in ``src/`` becomes an
+    offender and the guard is useless in the other direction.
+    """
+    ordinary = textwrap.dedent(
+        """
+        def f(db):
+            with db.transaction() as conn:
+                conn.execute("SELECT 1")
+        """
+    )
+    offenders, scanned = _offenders_in(ordinary, "ordinary.py")
+    assert scanned == 1, "the ordinary block was not scanned"
+    assert offenders == [], f"a block's own opener was reported: {offenders}"

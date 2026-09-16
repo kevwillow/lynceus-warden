@@ -558,8 +558,47 @@ class Database:
         text = str(exc).lower()
         return "locked" in text or "database is busy" in text
 
-    def run(self, fn: Callable[[sqlite3.Connection], _T], *, deadline_seconds: float) -> _T:
-        """Run ``fn(conn)`` in a write transaction, retrying if the lock is lost.
+    def run(
+        self,
+        fn: Callable[[sqlite3.Connection], _T],
+        *,
+        deadline_seconds: float,
+        readonly: bool = False,
+    ) -> _T:
+        """Run ``fn(conn)`` in a UNIT OF WORK, retrying if the lock is lost.
+
+        ⭐ **Each attempt is a whole ``unit()``**, so the read, the decision and
+        the write inside ``fn`` are one transaction on one connection with the
+        write lock taken up front. ``run()`` is the retryable form of that one
+        primitive and ``unit()`` is the form whose caller owns the retry
+        (``internal/specs/SPEC_unit_of_work.md`` §2); the retry loop wraps the
+        ``with``, because ``__exit__`` can never re-run the body.
+
+        ⚠️ **A failed attempt therefore contends at ``BEGIN IMMEDIATE``**, before
+        ``fn`` is called at all, where it used to contend at ``fn``'s first
+        write. An attempt that fails no longer runs a partial ``fn``.
+
+        ⚠️ **A writing ``run()`` holds the write lock for the WHOLE of ``fn``,
+        not just its writes.** ``BEGIN IMMEDIATE`` is taken before ``fn`` is
+        called. ⛔ **So ``fn`` must be SHORT.** Measured: an ``fn`` doing ~9s of
+        work made a second OS process''s ordinary write fail with
+        ``database is locked`` after 5s and be LOST — the exact harm this
+        primitive exists to prevent, reintroduced by holding the lock too long.
+        Read, decide, write, return. Nothing else.
+
+        ⭐ **``readonly=True`` issues a plain ``BEGIN``**, takes no write lock
+        and cannot block a writer. Use it for a callable that only reads.
+        Without it a read-only caller under contention pays the full deadline
+        and then RAISES where a plain read would have returned instantly —
+        measured at 5.00s against an 8s hold, with ``fn`` never invoked at all.
+
+        ⛔ **``fn`` MUST NOT call ``Database`` methods.** Most of them are
+        shaped ``with self._lock, self._conn:``, and once such a nested block
+        commits, the connection is in autocommit for the rest of the unit: a
+        later write then SURVIVES a failed unit. That is Finding 68, it is a
+        property of ``unit()`` rather than of this method, and no static guard
+        can see it — ``fn`` is not lexically inside a ``with``. Pass ``conn``
+        down and use plain SQL.
 
         ⛔ **``fn`` MAY RUN MORE THAN ONCE.** It must touch nothing but this
         database. No notification, no file write, no counter in memory that a
@@ -605,7 +644,13 @@ class Database:
         while True:
             attempts += 1
             try:
-                with self.transaction() as conn:
+                # ⛔ `unit()`, NOT `transaction()`. SPEC_unit_of_work.md §2: these
+                # are two forms of ONE primitive and the only difference is who
+                # owns the retry. `transaction()` sets no isolation_level, so a
+                # SELECT before the first write runs in AUTOCOMMIT -- retrying
+                # around that gives a caller a write that is durable but not
+                # atomic, which is the lost update `unit()` exists to close.
+                with self.unit(readonly=readonly) as conn:
                     return fn(conn)
             except sqlite3.OperationalError as exc:
                 if not self._is_lock_contention(exc):
