@@ -8,7 +8,7 @@ from lynceus import allowlist, db, kismet, main, notify, poller, rules
 
 
 def test_version():
-    assert lynceus.__version__ == "1.5.0"
+    assert lynceus.__version__ == "1.5.1"
 
 
 def test_version_matches_pyproject():

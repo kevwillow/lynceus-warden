@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-17
+
+### Fixed
+
+- **A `Database` method called from inside a unit of work committed that unit's
+  transaction.** `db.unit()` takes ownership of its own BEGIN/COMMIT, but 39
+  methods in the data layer open a nested block that commits when it exits — so
+  calling one from inside a unit ended the transaction early. Every write after
+  that point committed itself individually, and a unit that then failed could no
+  longer roll any of them back. Measured: a unit that raised still left all
+  three of its writes behind.
+
+  The unit now refuses the nested block outright, at the call site, naming the
+  fix. ⛔ Refusing rather than silently absorbing it is deliberate: a write that
+  looks committed but silently is not until the unit exits is worse to diagnose
+  than an error where the mistake was made.
+
+  ⚠️ No operator-visible change. Nothing in the shipped daemon uses units yet;
+  this makes the primitive correct before anything is migrated onto it.
+
 ## [1.5.0] - 2026-09-16
 
 ### Fixed
