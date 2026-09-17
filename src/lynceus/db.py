@@ -444,6 +444,70 @@ class PruneResult(NamedTuple):
     complete: bool
 
 
+class _UnitConnection:
+    """The connection a ``unit()`` hands out. Refuses what would break the unit.
+
+    ⛔ **Finding 68.** ``unit()`` sets ``isolation_level = None`` so it owns its
+    own BEGIN/COMMIT. Thirty-nine methods in this file are shaped
+    ``with self._lock, self._conn:`` -- and ``sqlite3``'s connection context
+    manager COMMITS on clean exit. Called from inside a unit, one of those
+    blocks therefore commits the unit's transaction; everything after it runs
+    in autocommit, and the rollback at the end has nothing left to undo.
+    Measured: a unit that RAISED still left all three of its writes behind.
+
+    ⛔ No static guard can catch it. ``run()``'s callable is not lexically
+    inside a ``with``, so the AST scan in
+    ``tests/test_transaction_discipline.py`` cannot see it -- planted and
+    confirmed. It has to be refused at RUNTIME.
+
+    ``SPEC_unit_of_work.md`` §3: *"Nesting? Refused. No implicit joining, no
+    savepoint games."* Joining would be friendlier and is deliberately not
+    done: a method that looks committed would silently not be until the unit
+    exits, which is a worse thing to debug than an exception at the call site.
+    """
+
+    __slots__ = ("_real",)
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name: str):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+    def __setattr__(self, name: str, value) -> None:
+        # ⛔ Forward, never shadow. A `__getattr__`-only proxy silently swallows
+        # attribute WRITES into its own __dict__ while reads still pass through,
+        # so the real connection never changes and nothing errors. Measured in
+        # this repo's own test proxies: `isolation_level = None` landed on the
+        # proxy and the connection stayed in legacy mode, passing.
+        setattr(object.__getattribute__(self, "_real"), name, value)
+
+    def __enter__(self):
+        raise RuntimeError(
+            "a Database method was called from inside db.unit(), and its "
+            "`with conn:` block would COMMIT the unit's transaction -- every "
+            "later write would then self-commit and the unit could no longer "
+            "roll back. Finding 68. Fix: pass the connection you already have "
+            "down to the inner code and use plain SQL, rather than calling a "
+            "Database method."
+        )
+
+    def __exit__(self, *exc) -> bool:  # pragma: no cover - __enter__ always raises
+        return False
+
+    def commit(self) -> None:
+        raise RuntimeError(
+            "callers never commit the unit -- it commits on clean exit "
+            "(SPEC_unit_of_work.md §3). Return from the unit body instead."
+        )
+
+    def rollback(self) -> None:
+        raise RuntimeError(
+            "callers never roll back the unit -- raise, and the unit rolls "
+            "back and propagates (SPEC_unit_of_work.md §3)."
+        )
+
+
 class Database:
     def __init__(self, path: str) -> None:
         # sqlite3.connect with a nested non-existent path fails with the
@@ -826,18 +890,30 @@ class Database:
                 # wedged the Database the same way from the exit path.
                 try:
                     self._conn.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
+                    # ⛔ Install the guard AFTER the BEGIN and restore it in the
+                    # same `finally` that restores the isolation level, so a
+                    # raise anywhere below cannot leave the Database holding a
+                    # proxy. That is Defect A (#279) -- a failed entry leaving
+                    # state behind -- reached through a different door.
+                    real = self._conn
+                    guarded = _UnitConnection(real)
+                    self._conn = guarded
                     try:
-                        yield self._conn
+                        yield guarded
                     except BaseException:
                         # ⚠️ BaseException, not Exception. A KeyboardInterrupt
                         # or a GeneratorExit mid-unit must still roll back;
                         # leaving the transaction open would hold the write lock
                         # until the connection died and block every other
                         # process.
-                        self._conn.rollback()
+                        real.rollback()
                         raise
                     else:
-                        self._conn.commit()
+                        real.commit()
+                    finally:
+                        # ⛔ The unit's OWN commit/rollback go to the real
+                        # connection: the guard refuses both, on purpose.
+                        self._conn = real
                 finally:
                     self._conn.isolation_level = previous_isolation
             finally:

@@ -19,7 +19,7 @@ import sqlite3
 
 import pytest
 
-from lynceus.db import Database
+from lynceus.db import Database, _UnitConnection
 
 MAC = "aa:bb:cc:00:00:01"
 
@@ -512,3 +512,108 @@ def test_a_WRITING_run_still_takes_the_write_lock(tmp_path):
         f"lost-update window is open again: {seen['other']}"
     )
     other.close()
+
+
+def _a_database_method(db, label):
+    """The shape 39 methods in db.py use verbatim."""
+    with db._lock, db._conn:
+        db._conn.execute("INSERT INTO t VALUES (?)", (label,))
+
+
+def _seeded(tmp_path, name):
+    db = Database(str(tmp_path / name))
+    db._conn.execute("CREATE TABLE t(v TEXT)")
+    db._conn.commit()
+    return db
+
+
+def test_a_database_method_called_inside_a_unit_is_REFUSED(tmp_path):
+    """⛔ Finding 68. A nested ``with conn:`` COMMITS the unit's transaction.
+
+    ``unit()`` sets ``isolation_level = None`` to own its own BEGIN/COMMIT, so
+    ``with self._lock, self._conn:`` -- the shape 39 ``db.py`` methods use --
+    commits on exit. Everything after it then runs in autocommit, and the
+    rollback at the end has nothing left to undo. Measured before this refusal:
+
+        rows surviving a FAILED unit: ['a', 'b', 'c']
+        the contract says:            []
+
+    ⛔ No static guard can catch it: ``run()``'s callable is not lexically
+    inside a ``with``. SPEC_unit_of_work.md §3 says "Nesting? Refused. No
+    implicit joining, no savepoint games" -- so it is refused at RUNTIME, at
+    the call site, rather than silently joined.
+    """
+    db = _seeded(tmp_path, "f68.db")
+
+    with pytest.raises(RuntimeError, match="pass the connection"):
+        with db.unit() as conn:
+            conn.execute("INSERT INTO t VALUES ('a')")
+            _a_database_method(db, "b")
+
+    rows = [r[0] for r in db._conn.execute("SELECT v FROM t")]
+    assert rows == [], f"a failed unit left rows behind: {rows}"
+
+
+def test_the_refusal_does_not_wedge_the_database(tmp_path):
+    """⛔ The fix installs a proxy as ``self._conn``. A raise between installing
+    and restoring it would leave the Database holding a proxy forever — which
+    is Defect A (#279) reintroduced through a different door."""
+    db = _seeded(tmp_path, "wedge.db")
+
+    with pytest.raises(RuntimeError):
+        with db.unit() as conn:
+            conn.execute("INSERT INTO t VALUES ('x')")
+            _a_database_method(db, "y")
+
+    assert db._txn_depth == 0, "the depth counter leaked"
+    assert not isinstance(db._conn, _UnitConnection), "the proxy was never removed"
+    # ⭐ The load-bearing half: the Database still WORKS.
+    _a_database_method(db, "after")
+    with db.unit() as conn:
+        conn.execute("INSERT INTO t VALUES ('later')")
+    assert [r[0] for r in db._conn.execute("SELECT v FROM t")] == ["after", "later"]
+
+
+def test_a_database_method_OUTSIDE_a_unit_still_commits(tmp_path):
+    """⛔ The opposite direction. The fail-closed mirror of this change is a
+    refusal that escapes the unit and breaks all 39 ordinary call sites."""
+    db = _seeded(tmp_path, "outside.db")
+    _a_database_method(db, "ordinary")
+    assert [r[0] for r in db._conn.execute("SELECT v FROM t")] == ["ordinary"]
+
+
+def test_a_unit_body_cannot_commit_or_rollback_the_unit(tmp_path):
+    """SPEC §3: "Who commits? The unit, on clean exit. Callers never commit." """
+    db = _seeded(tmp_path, "nocommit.db")
+    for op in ("commit", "rollback"):
+        with pytest.raises(RuntimeError, match="the unit"):
+            with db.unit() as conn:
+                getattr(conn, op)()
+        assert db._txn_depth == 0
+
+
+def test_a_readonly_unit_refuses_nesting_too(tmp_path):
+    """A read-only unit takes no write lock, but a nested block would still end
+    its transaction — the refusal is about the transaction, not the lock."""
+    db = _seeded(tmp_path, "ro.db")
+    with pytest.raises(RuntimeError, match="pass the connection"):
+        with db.unit(readonly=True) as conn:
+            conn.execute("SELECT 1")
+            _a_database_method(db, "z")
+    assert db._txn_depth == 0
+
+
+def test_an_attribute_set_through_the_unit_reaches_the_REAL_connection(tmp_path):
+    """⛔ The proxy forwards writes. A ``__getattr__``-only proxy swallows
+    attribute WRITES into its own ``__dict__`` while reads still pass through —
+    nothing errors, and the real connection never changes. That exact shape was
+    measured in this repo's test proxies, where ``isolation_level = None``
+    landed on the proxy and the connection stayed in legacy mode, passing."""
+    db = _seeded(tmp_path, "setattr.db")
+    real = db._conn
+    with db.unit() as conn:
+        conn.row_factory = sqlite3.Row
+        assert real.row_factory is sqlite3.Row, (
+            "the write landed on the proxy, not the connection"
+        )
+    real.row_factory = None
