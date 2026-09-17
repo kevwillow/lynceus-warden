@@ -102,7 +102,11 @@ f4:f5:e8:dd:ee:ff: shipped demo data; real vendor OUI with a hand-written NIC po
 # ── commit MESSAGES exempted by SHA, never by identifier ──
 # ⛔ Listing the MAC here would write a redacted value back into a tracked
 # file, which is exactly what redacting BACKLOG.md was for.
+#
+# ⚠️ Only commits reachable from main or HEAD count. A leftover branch from
+# a squash-merged PR (origin/docs/odid-proven-on-air) carries the same rig
+# MAC in a duplicate commit message and is OUTSIDE that universe -- deleting
+# those stale branches removes it for real, which an exemption never does.
 commit 6d8ea11d: rig adapter MAC in the message body; redacted from files, history kept by the 2026-09-16 decision in docs/AUDIT_REGISTER.md
-commit 8e930fef: same rig adapter MAC, same decision
 commit d1e80cce: two rig adapter MACs in the message body, same decision
 commit fb65d27c: synthetic MACs quoted in a fixture-refresh message; vendor OUIs with hand-written NIC portions

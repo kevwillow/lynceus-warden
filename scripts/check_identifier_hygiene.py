@@ -235,8 +235,33 @@ def scan() -> dict:
             "commit and report OK having checked nothing.\n"
             "Use `fetch-depth: 0` on actions/checkout, or run this on a full clone."
         )
+    # ⛔ NOT `--all`. `git log --all` walks whatever refs happen to be FETCHED,
+    # and that differs by environment: a full local clone carries every
+    # `origin/*` branch, while `actions/checkout` fetches only the ref it is
+    # building. The same allowlist then reads correct locally and STALE in CI,
+    # which is how this gate first went red.
+    #
+    # ⇒ The universe is the canonical branch UNION the current HEAD:
+    # deterministic everywhere, and it still covers a PR, because a PR's own
+    # commits are reachable from HEAD before they merge.
+    #
+    # ⚠️ The cost, stated rather than hidden: a leak sitting on an ABANDONED
+    # published branch that was never merged is outside this universe. Stale
+    # branches from squash-merged PRs are exactly that shape.
+    refs = []
+    for candidate in ("origin/main", "main", "HEAD"):
+        probe = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", candidate],
+            capture_output=True,
+            text=True,
+            cwd=REPO,
+        )
+        if probe.returncode == 0:
+            refs.append(candidate)
+    if not refs:
+        raise SystemExit("no main/HEAD ref to walk — the commit scan proves nothing")
     log = subprocess.run(
-        ["git", "log", "--all", "--format=%H%x01%B%x02"],
+        ["git", "log", *refs, "--format=%H%x01%B%x02"],
         capture_output=True,
         text=True,
         cwd=REPO,
