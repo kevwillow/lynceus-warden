@@ -219,6 +219,22 @@ def scan() -> dict:
     # ⛔ Commit messages too. `DC:41:A9` was only ever in a message, which is
     # exactly why the file scan never saw it. Historical commits are exempted
     # BY SHA so no redacted value is written back into a tracked file.
+    # ⛔ A SHALLOW clone makes this scan vacuous: `git log --all` sees one
+    # commit, finds nothing, and the gate reports OK having checked no history
+    # at all. `actions/checkout` is shallow BY DEFAULT, so this is the normal
+    # CI condition, not an edge case. Refuse loudly instead.
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+    ).stdout.strip()
+    if shallow == "true":
+        raise SystemExit(
+            "this is a SHALLOW clone, so the commit-message scan would read one "
+            "commit and report OK having checked nothing.\n"
+            "Use `fetch-depth: 0` on actions/checkout, or run this on a full clone."
+        )
     log = subprocess.run(
         ["git", "log", "--all", "--format=%H%x01%B%x02"],
         capture_output=True,

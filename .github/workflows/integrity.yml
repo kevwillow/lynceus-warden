@@ -283,7 +283,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # ⛔ FULL history. `actions/checkout` is shallow by default, and the
+      # commit-message half of this gate then reads ONE commit, finds nothing,
+      # and reports OK having checked no history at all. The script refuses a
+      # shallow clone outright so this can never regress into a silent pass.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
