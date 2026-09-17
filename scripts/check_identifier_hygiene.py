@@ -32,6 +32,7 @@ address. Right predicate, wrong question.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -97,44 +98,102 @@ def _tracked_files() -> list[str]:
     ]
 
 
-def _load_allowlist() -> dict[str, str]:
-    """``mac: reason`` pairs. Deliberately a hand-parsed flat file.
+def _load_allowlist() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """Return (macs, ssids, exempt_commits), each mapping key -> reason.
 
-    No YAML dependency, and the format refuses an entry with no reason —
-    an allowlist that accepts a bare identifier is a list of things nobody
-    had to justify.
+    Deliberately a hand-parsed flat file: no YAML dependency, so the gate keeps
+    working when the package does not install. Three kinds of line:
+
+        ac:de:48:00:11:22: reason          a MAC
+        "CafeWiFi": reason                 an SSID, QUOTED
+        commit 6d8ea11d: reason            a historical commit message
+
+    ⛔ SSIDs are quoted because an SSID may legally contain a colon, which is
+    also the MAC separator and the key/reason separator. The quote is what
+    makes the line unambiguous rather than merely usually-right.
+
+    ⛔ Historical commit messages are exempted BY SHA, never by identifier.
+    Listing the identifier would write it back into a tracked file, which is
+    precisely what redacting it from BACKLOG.md was for.
+
+    Every form refuses an entry with no reason: an allowlist that accepts a
+    bare identifier is a list of things nobody had to justify.
     """
+    macs: dict[str, str] = {}
+    ssids: dict[str, str] = {}
+    commits: dict[str, str] = {}
     if not ALLOWLIST.exists():
-        return {}
-    entries: dict[str, str] = {}
+        return macs, ssids, commits
     for lineno, raw in enumerate(
         ALLOWLIST.read_text(encoding="utf-8").splitlines(), start=1
     ):
-        line = raw.split("#", 1)[0].strip()
+        line = raw.split("#", 1)[0].strip() if not raw.lstrip().startswith('"') else raw.strip()
         if not line:
             continue
-        if ":" not in line:
-            raise SystemExit(f"{ALLOWLIST.name}:{lineno}: expected 'mac: reason'")
-        mac, _, reason = line.partition(": ")
-        mac = mac.strip().strip('"').lower()
-        reason = reason.strip().strip('"')
+
+        if line.startswith('"'):
+            end = line.find('"', 1)
+            if end == -1:
+                raise SystemExit(f"{ALLOWLIST.name}:{lineno}: unterminated quoted SSID")
+            key, rest = line[1:end], line[end + 1 :]
+            if not rest.startswith(": "):
+                raise SystemExit(f"{ALLOWLIST.name}:{lineno}: expected '\"ssid\": reason'")
+            reason = rest[2:].split("#", 1)[0].strip()
+            target, norm = ssids, key
+        elif line.startswith("commit "):
+            sha, _, reason = line[len("commit ") :].partition(": ")
+            target, norm, reason = commits, sha.strip().lower(), reason.strip()
+        else:
+            mac, _, reason = line.partition(": ")
+            target, norm, reason = macs, mac.strip().lower(), reason.strip()
+
         if not reason:
+            # `norm` keeps a trailing colon when `partition(": ")` found no
+            # space; strip it so the message names the key, not the parse.
             raise SystemExit(
-                f"{ALLOWLIST.name}:{lineno}: {mac} has no reason. "
+                f"{ALLOWLIST.name}:{lineno}: {norm.rstrip(':')!r} has no reason. "
                 "An exemption without a reason is not an exemption."
             )
-        entries[mac] = reason
-    return entries
+        target[norm] = reason
+    return macs, ssids, commits
 
 
-def scan() -> tuple[dict[str, list[str]], set[str]]:
-    """Return (unallowlisted real-looking MACs -> where, all real MACs seen)."""
-    allow = _load_allowlist()
-    offenders: dict[str, list[str]] = {}
-    seen: set[str] = set()
+# Keys whose VALUE is a network name somebody's device broadcast or asked for.
+# ⛔ An SSID has no structural marker the way a MAC has the U/L bit -- any
+# string is a legal SSID -- so the universe is the FIELDS, not the values. That
+# is the whole reason this is a per-field scan and not a regex over everything.
+_SSID_KEY = re.compile(r"ssid|essid|network_?name|base\.name", re.I)
+
+
+def _ssid_values(obj, keypath: str = ""):
+    """Yield every string sitting under an SSID-ish key, at any depth."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if _SSID_KEY.search(k) and isinstance(v, str) and v.strip():
+                yield v
+            yield from _ssid_values(v, f"{keypath}.{k}")
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _ssid_values(v, keypath)
+    elif isinstance(obj, str) and _SSID_KEY.search(keypath) and obj.strip():
+        yield obj
+
+
+def scan() -> dict:
+    """Everything unaccounted for, plus everything seen, for the stale check."""
+    macs, ssids, exempt_commits = _load_allowlist()
+    out = {
+        "mac_offenders": {},
+        "ssid_offenders": {},
+        "msg_offenders": {},
+        "macs_seen": set(),
+        "ssids_seen": set(),
+        "commits_seen": set(),
+    }
     files = _tracked_files()
     if not files:
         raise SystemExit("no tracked files scanned — the derivation proves nothing")
+
     for rel in files:
         try:
             text = (REPO / rel).read_text(encoding="utf-8", errors="ignore")
@@ -144,47 +203,166 @@ def scan() -> tuple[dict[str, list[str]], set[str]]:
             mac = m.group(1).lower()
             if not _could_identify_a_real_device(mac):
                 continue
-            seen.add(mac)
-            if mac not in allow:
-                offenders.setdefault(mac, []).append(rel)
-    return offenders, seen
+            out["macs_seen"].add(mac)
+            if mac not in macs:
+                out["mac_offenders"].setdefault(mac, []).append(rel)
+        if rel.endswith((".json", ".yaml", ".yml")):
+            try:
+                data = json.loads(text)
+            except (ValueError, RecursionError):
+                continue  # YAML that is not JSON: fixtures here are JSON
+            for value in _ssid_values(data):
+                out["ssids_seen"].add(value)
+                if value not in ssids:
+                    out["ssid_offenders"].setdefault(value, []).append(rel)
+
+    # ⛔ Commit messages too. `DC:41:A9` was only ever in a message, which is
+    # exactly why the file scan never saw it. Historical commits are exempted
+    # BY SHA so no redacted value is written back into a tracked file.
+    # ⛔ A SHALLOW clone makes this scan vacuous: `git log --all` sees one
+    # commit, finds nothing, and the gate reports OK having checked no history
+    # at all. `actions/checkout` is shallow BY DEFAULT, so this is the normal
+    # CI condition, not an edge case. Refuse loudly instead.
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+    ).stdout.strip()
+    if shallow == "true":
+        raise SystemExit(
+            "this is a SHALLOW clone, so the commit-message scan would read one "
+            "commit and report OK having checked nothing.\n"
+            "Use `fetch-depth: 0` on actions/checkout, or run this on a full clone."
+        )
+    # ⛔ NOT `--all`. `git log --all` walks whatever refs happen to be FETCHED,
+    # and that differs by environment: a full local clone carries every
+    # `origin/*` branch, while `actions/checkout` fetches only the ref it is
+    # building. The same allowlist then reads correct locally and STALE in CI,
+    # which is how this gate first went red.
+    #
+    # ⇒ The universe is the canonical branch UNION the current HEAD:
+    # deterministic everywhere, and it still covers a PR, because a PR's own
+    # commits are reachable from HEAD before they merge.
+    #
+    # ⚠️ The cost, stated rather than hidden: a leak sitting on an ABANDONED
+    # published branch that was never merged is outside this universe. Stale
+    # branches from squash-merged PRs are exactly that shape.
+    refs = []
+    for candidate in ("origin/main", "main", "HEAD"):
+        probe = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", candidate],
+            capture_output=True,
+            text=True,
+            cwd=REPO,
+        )
+        if probe.returncode == 0:
+            refs.append(candidate)
+    if not refs:
+        raise SystemExit("no main/HEAD ref to walk — the commit scan proves nothing")
+    log = subprocess.run(
+        ["git", "log", *refs, "--format=%H%x01%B%x02"],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+    ).stdout
+    for record in log.split("\x02"):
+        if "\x01" not in record:
+            continue
+        sha, body = record.split("\x01", 1)
+        sha = sha.strip().lower()
+        short = sha[:8]
+        out["commits_seen"].add(short)
+        if short in exempt_commits:
+            continue
+        for m in _MAC.finditer(body):
+            mac = m.group(1).lower()
+            if not _could_identify_a_real_device(mac):
+                continue
+            # ⚠️ Counts as SEEN even when allowlisted, or a MAC that lives only
+            # in a commit message would be reported STALE the moment somebody
+            # allowlists it by value.
+            out["macs_seen"].add(mac)
+            if mac in macs:
+                continue
+            out["msg_offenders"].setdefault(mac, []).append(short)
+    return out
 
 
 def main() -> int:
-    offenders, seen = scan()
-    allow = _load_allowlist()
+    found = scan()
+    macs, ssids, exempt_commits = _load_allowlist()
+    rc = 0
 
-    stale = sorted(set(allow) - seen)
+    # ⛔ Stale first. A reason attached to something no longer in the tree is
+    # unverifiable, and an allowlist nobody prunes becomes the place real
+    # exposures go to be forgotten.
+    stale = (
+        [f"  {m}  ({macs[m]})" for m in sorted(set(macs) - found["macs_seen"])]
+        + [f'  "{v}"  ({ssids[v]})' for v in sorted(set(ssids) - found["ssids_seen"])]
+        + [
+            f"  commit {c}  ({exempt_commits[c]})"
+            for c in sorted(set(exempt_commits) - found["commits_seen"])
+        ]
+    )
     if stale:
-        print(
-            "STALE allowlist entries — these identifiers are no longer in the "
-            "tree, so the reason attached to them is unverifiable. Remove them:"
-        )
-        for mac in stale:
-            print(f"  {mac}  ({allow[mac]})")
-        return 1
+        print("STALE allowlist entries — no longer present, so their reasons")
+        print("cannot be checked. Remove them:")
+        print("\n".join(stale))
+        rc = 1
 
-    if offenders:
+    if found["mac_offenders"]:
         print(
-            "A globally-administered MAC address was committed with no recorded "
-            "reason. This repository is public and these identify real devices "
-            "belonging to real people.\n"
+            "\nA globally-administered MAC was committed with no recorded reason. "
+            "This repository is public and these identify real devices.\n"
         )
-        for mac, files in sorted(offenders.items()):
-            where = ", ".join(sorted(set(files))[:4])
-            print(f"  {mac}   in {where}")
+        for mac, files in sorted(found["mac_offenders"].items()):
+            print(f"  {mac}   in {', '.join(sorted(set(files))[:4])}")
         print(
-            f"\n{len(offenders)} unexplained identifier(s).\n"
-            "If these are synthetic, use a locally-administered address "
-            "(02:, 06:, 0a:, 0e: ...) and nothing needs explaining.\n"
-            "If they come from a PUBLISHED corpus, add them to "
+            "\nIf synthetic, use a locally-administered address (02:, 06:, 0a:, "
+            "0e: ...) and nothing needs explaining.\n"
+            "If from a PUBLISHED corpus, add it to "
             f"{ALLOWLIST.name} with the source.\n"
-            "⛔ If they came off a real radio, they do not belong in a public repo."
+            "⛔ If it came off a real radio, it does not belong in a public repo."
         )
-        return 1
+        rc = 1
 
-    print(f"identifier hygiene: OK ({len(seen)} allowlisted, all accounted for)")
-    return 0
+    if found["ssid_offenders"]:
+        print(
+            "\nA network name was committed with no recorded reason. An SSID names "
+            "a PLACE — a home, an office, a hotel — and public wardriving datasets "
+            "index them against GPS.\n"
+        )
+        for value, files in sorted(found["ssid_offenders"].items()):
+            print(f'  "{value}"   in {", ".join(sorted(set(files))[:4])}')
+        print(
+            f"\nIf invented, add it to {ALLOWLIST.name} saying so.\n"
+            "⛔ If a real device probed for it, it is somebody's network and does "
+            "not belong here."
+        )
+        rc = 1
+
+    if found["msg_offenders"]:
+        print(
+            "\nA COMMIT MESSAGE carries an unexplained device identifier. Redacting "
+            "the file does not touch the message, and the message is published too.\n"
+        )
+        for mac, shas in sorted(found["msg_offenders"].items()):
+            print(f"  {mac}   in commit(s) {', '.join(sorted(set(shas))[:4])}")
+        print(
+            "\n⛔ A commit message cannot be edited without rewriting history. "
+            "Amend BEFORE pushing, or record the commit as a deliberate historical "
+            f"exemption in {ALLOWLIST.name}:  commit <sha8>: <why>"
+        )
+        rc = 1
+
+    if rc == 0:
+        print(
+            f"identifier hygiene: OK "
+            f"({len(found['macs_seen'])} MACs, {len(found['ssids_seen'])} SSIDs, "
+            f"{len(exempt_commits)} exempted commit(s), all accounted for)"
+        )
+    return rc
 
 
 if __name__ == "__main__":

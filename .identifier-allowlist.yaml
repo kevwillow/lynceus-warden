@@ -82,3 +82,31 @@ dd:dd:dd:dd:dd:dd: synthetic test placeholder; hand-written NIC portion, never o
 dd:ee:ff:11:22:33: synthetic test placeholder; hand-written NIC portion, never off a radio
 f0:9f:c2:55:66:77: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
 f4:f5:e8:dd:ee:ff: shipped demo data; real vendor OUI with a hand-written NIC portion, so vendor resolution is exercised
+
+# ── network names (SSIDs), quoted because an SSID may contain a colon ──
+"00:00:00:00:00:00": Kismet emits the null BSSID in this field for an unassociated device
+"CafeWiFi": invented demo network name
+"Coherer": Wireshark public wpa-Induction.pcap sample; provenance in tests/test_kismet_real_capture.py
+"DevCafe": invented dev-fixture network name
+"DevHomeWiFi": invented dev-fixture network name
+"FlockSafety-Falcon": invented; names the ALPR vendor the demo detects, not a real network
+"HomeNet": invented fixture network name, the repo's standard placeholder
+"HomeRouter": invented demo network name
+"MysteryAP": invented fixture network name
+"Open": Kismet's literal for an unencrypted network, not a network name
+"RaspberryPi-AP": invented fixture network name
+"definitely_not_a_pineapple": invented; a joke name for the rogue-AP fixture
+"linksys": Wireshark public wpa-Induction.pcap sample; a vendor default, not a chosen name
+"newcomer": invented fixture network name for the second integration tick
+
+# ── commit MESSAGES exempted by SHA, never by identifier ──
+# ⛔ Listing the MAC here would write a redacted value back into a tracked
+# file, which is exactly what redacting BACKLOG.md was for.
+#
+# ⚠️ Only commits reachable from main or HEAD count. A leftover branch from
+# a squash-merged PR (origin/docs/odid-proven-on-air) carries the same rig
+# MAC in a duplicate commit message and is OUTSIDE that universe -- deleting
+# those stale branches removes it for real, which an exemption never does.
+commit 6d8ea11d: rig adapter MAC in the message body; redacted from files, history kept by the 2026-09-16 decision in docs/AUDIT_REGISTER.md
+commit d1e80cce: two rig adapter MACs in the message body, same decision
+commit fb65d27c: synthetic MACs quoted in a fixture-refresh message; vendor OUIs with hand-written NIC portions
