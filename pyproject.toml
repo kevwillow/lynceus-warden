@@ -64,8 +64,8 @@ ble = [
     "bleak>=3.0.2,<4.0",
 ]
 dev = [
-    "pytest>=9.1.1",
-    "pytest-mock>=3.15.1",
+    "pytest>=9.2.0",
+    "pytest-mock>=3.17.0",
     # Coverage is measurement, not a gate on quality -- see the note on
     # `--cov-fail-under` in .github/workflows/ci.yml. Kept in `dev` rather than
     # a separate extra so `make install` gives a contributor the same tooling
@@ -74,8 +74,8 @@ dev = [
     "pytest-cov>=7.1.0",
     "httpx>=0.28.1",
     "freezegun>=1.5.5",
-    "ruff>=0.16.5",
-    "build>=1.6.0",
+    "ruff>=0.17.3",
+    "build>=1.6.1",
 ]
 
 [project.scripts]
