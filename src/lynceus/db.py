@@ -3778,6 +3778,55 @@ class Database:
             "locations": locations,
         }
 
+    def list_strong_sighting_ts(
+        self, mac: str, *, min_rssi: int, since_ts: int
+    ) -> list[int]:
+        """Ascending ``ts`` of one device's STRONG sightings within a window.
+
+        "Strong" = ``rssi < 0 AND rssi >= min_rssi``. The ``rssi < 0``
+        half is not redundant with ``min_rssi``: rssi 0 is a bogus
+        reading seen on wired/virtual MACs, and it must never count as
+        strong even with ``min_rssi`` <= 0 (which it always is).
+        Consumed by the ``randomized_device_present`` eval branch; the
+        ``idx_sightings_mac_ts`` index covers the ``mac``/``ts`` shape.
+        Parameterised SQL only, read-only.
+        """
+        rows = self._conn.execute(
+            "SELECT ts FROM sightings "
+            "WHERE mac = ? AND rssi < 0 AND rssi >= ? AND ts >= ? "
+            "ORDER BY ts ASC, id ASC",
+            (mac, min_rssi, since_ts),
+        ).fetchall()
+        return [int(r["ts"]) for r in rows]
+
+    def latest_strong_sighting_ts(self, mac: str, *, min_rssi: int) -> int | None:
+        """The newest strong sighting ``ts`` for one device, or None.
+
+        Same "strong" predicate as ``list_strong_sighting_ts`` (rssi
+        < 0 and >= min_rssi); see that method's docstring.
+        """
+        row = self._conn.execute(
+            "SELECT ts FROM sightings "
+            "WHERE mac = ? AND rssi < 0 AND rssi >= ? "
+            "ORDER BY ts DESC, id DESC LIMIT 1",
+            (mac, min_rssi),
+        ).fetchone()
+        return int(row["ts"]) if row else None
+
+    def count_alerts_for_rule_since(self, rule_name: str, since_ts: int) -> int:
+        """How many alerts one rule_name has written at or after ``since_ts``.
+
+        Consumed by ``randomized_device_present``'s rate cap. Ignores
+        ``mac`` on purpose: the cap bounds the RULE's alert volume per
+        hour, not per device. ``idx_alerts_ts`` covers the ``ts >= ?``
+        clause. Parameterised SQL only, read-only.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE rule_name = ? AND ts >= ?",
+            (rule_name, since_ts),
+        ).fetchone()
+        return int(row[0])
+
     def list_watchlist(self) -> list[dict]:
         rows = self._conn.execute(
             "SELECT id, pattern, pattern_type, severity, description "

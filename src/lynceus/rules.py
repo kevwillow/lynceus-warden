@@ -110,8 +110,15 @@ RuleType = Literal[
     "new_non_randomized_device",
     "watchful_recurrence",
     "ble_device_class",
+    "randomized_device_present",
 ]
 Severity = Literal["low", "med", "high"]
+
+# Presence-rule tuning: two consecutive strong sightings of a randomized MAC
+# more than this many seconds apart break the dwell run, so a device that
+# wanders off and comes back starts counting over.
+PRESENCE_MAX_GAP_SECONDS = 300
+# kiss: fixed 5-min gap; make it a rule field if tuning needs it
 
 
 class Rule(BaseModel):
@@ -127,6 +134,17 @@ class Rule(BaseModel):
     shadow: bool = False
     patterns: list[str] = []
     description: str | None = None
+    #: ``randomized_device_present`` only. Strong-signal threshold in dBm;
+    #: REQUIRED for that rule_type, integer in [-100, -1]. Forbidden (must stay
+    #: None) on every other rule_type.
+    presence_min_rssi: int | None = None
+    #: ``randomized_device_present`` only. Minimum unbroken strong-sighting
+    #: span in seconds; defaults to 600 when None, must be >= 60 when set.
+    presence_min_dwell_seconds: int | None = None
+    #: ``randomized_device_present`` only. Rate cap: at or over this many
+    #: alerts for the rule in the trailing hour, no hit; defaults to 6 when
+    #: None, must be >= 1 when set.
+    presence_max_alerts_per_hour: int | None = None
 
     @model_validator(mode="after")
     def _validate_rule(self) -> Rule:
@@ -159,6 +177,15 @@ class Rule(BaseModel):
             if self.patterns:
                 raise ValueError(
                     f"rule {self.name!r}: new_non_randomized_device must have empty patterns"
+                )
+        elif self.rule_type == "randomized_device_present":
+            # Categorical like new_non_randomized_device: the three
+            # presence_* fields carry the whole configuration, so
+            # patterns would be dead weight an operator could believe
+            # does something.
+            if self.patterns:
+                raise ValueError(
+                    f"rule {self.name!r}: randomized_device_present must have empty patterns"
                 )
         elif self.rule_type == "watchful_recurrence":
             # System-emitted: the poller generates this rule_type at
@@ -203,6 +230,54 @@ class Rule(BaseModel):
             pass
         # No else: the RuleType Literal already constrains rule_type
         # to a known set; pydantic rejects unknown values upstream.
+
+        # presence_* field admission, after the patterns chain so both
+        # checks read as their own block: a silent no-op field is the
+        # defect this repo keeps fixing, so the three fields are
+        # REQUIRED / defaulted here and FORBIDDEN everywhere else.
+        if self.rule_type == "randomized_device_present":
+            if self.presence_min_rssi is None:
+                raise ValueError(
+                    f"rule {self.name!r}: randomized_device_present requires "
+                    "presence_min_rssi (integer dBm threshold in [-100, -1])"
+                )
+            if (
+                not isinstance(self.presence_min_rssi, int)
+                or isinstance(self.presence_min_rssi, bool)
+                or not (-100 <= self.presence_min_rssi <= -1)
+            ):
+                raise ValueError(
+                    f"rule {self.name!r}: presence_min_rssi must be an integer "
+                    f"in [-100, -1], got {self.presence_min_rssi!r}"
+                )
+            # Frozen model: apply defaults with object.__setattr__, the
+            # same convention the pattern normalization above uses.
+            if self.presence_min_dwell_seconds is None:
+                object.__setattr__(self, "presence_min_dwell_seconds", 600)
+            if self.presence_max_alerts_per_hour is None:
+                object.__setattr__(self, "presence_max_alerts_per_hour", 6)
+            if self.presence_min_dwell_seconds < 60:
+                raise ValueError(
+                    f"rule {self.name!r}: presence_min_dwell_seconds must be "
+                    f">= 60, got {self.presence_min_dwell_seconds!r}"
+                )
+            if self.presence_max_alerts_per_hour < 1:
+                raise ValueError(
+                    f"rule {self.name!r}: presence_max_alerts_per_hour must be "
+                    f">= 1, got {self.presence_max_alerts_per_hour!r}"
+                )
+        else:
+            for field_name in (
+                "presence_min_rssi",
+                "presence_min_dwell_seconds",
+                "presence_max_alerts_per_hour",
+            ):
+                if getattr(self, field_name) is not None:
+                    raise ValueError(
+                        f"rule {self.name!r}: {field_name} only applies to "
+                        "randomized_device_present rules; it has no effect on "
+                        f"{self.rule_type}"
+                    )
 
         if self.rule_type == "watchlist_mac":
             normalized = [normalize_mac(p) for p in self.patterns]
@@ -1020,12 +1095,16 @@ def evaluate(
     ``tests/test_severity_paths_are_wired.py`` now measures the set
     instead of asserting it in prose, so the count cannot rot again.
 
-    The three non-delegating rule_types
+    The four non-delegating rule_types
     (``new_non_randomized_device``, ``ble_device_class``,
-    ``watchful_recurrence``) consult NOTHING, and cannot: an
-    override keys on the matched watchlist row's category / vendor /
-    argus_record_id, and those rule_types match no watchlist row.
-    That is inherent, not a gap to close. None or
+    ``watchful_recurrence``, ``randomized_device_present``) consult
+    no severity override, and cannot: an override keys on the
+    matched watchlist row's category / vendor / argus_record_id, and
+    those rule_types match no watchlist row. (``randomized_device_present``
+    does consult ``db`` — for its own ``sightings``/``alerts`` rows,
+    never the watchlist — so it needs ``db=`` like the delegation
+    types, but an override still has nothing to key on.) That is
+    inherent, not a gap to close. None or
     empty config short-circuits to pass-through — byte-identical
     RuleHits to the pre-overrides behavior. The three per-match
     metadata-driven checks each gate independently: vendor-suppress
@@ -1630,6 +1709,95 @@ def evaluate(
                         mac=obs.mac,
                     )
                 )
+
+        elif rule.rule_type == "randomized_device_present":
+            # "Someone's phone is inside the house": a randomized-MAC
+            # device with a strong, sustained signal. The only rule
+            # type built for randomized MACs. A hard `mac` allowlist
+            # entry silences it (checked before evaluate, in the
+            # poller): a connected phone keeps a stable per-network
+            # randomized MAC, so household phones can be allowlisted.
+            # Consults db for its own sightings/alerts rows but never
+            # the watchlist, so severity_overrides cannot apply.
+            if not obs.is_randomized:
+                continue
+            if (
+                obs.rssi is None
+                or obs.rssi < rule.presence_min_rssi
+                or obs.rssi >= 0
+            ):
+                # rssi 0 is a bogus reading seen on wired/virtual MACs;
+                # it must never count as strong, hence the >= 0 guard.
+                continue
+            if db is None:
+                # No DB, no hit — never raise; the poller passes db=
+                # whenever a db-backed rule_type is in the ruleset.
+                logger.debug(
+                    "presence rule %r evaluated without db; skipping",
+                    rule.name,
+                )
+                continue
+            latest_strong_ts = db.latest_strong_sighting_ts(
+                obs.mac, min_rssi=rule.presence_min_rssi
+            )
+            if latest_strong_ts is None:
+                continue
+            # Bounded query: nothing older than the span we could
+            # possibly need can contribute to the run. The run is
+            # therefore measured only up to dwell + gap, which is why the
+            # message says "at least".
+            run_ts = db.list_strong_sighting_ts(
+                obs.mac,
+                min_rssi=rule.presence_min_rssi,
+                since_ts=(
+                    latest_strong_ts
+                    - rule.presence_min_dwell_seconds
+                    - PRESENCE_MAX_GAP_SECONDS
+                ),
+            )
+            # Walk backwards from the latest strong sighting, stopping
+            # at the first gap wider than PRESENCE_MAX_GAP_SECONDS: the
+            # run is the unbroken suffix, and a device that wandered off
+            # and came back starts counting over. The comparison is
+            # between CONSECUTIVE sightings, not each against the end —
+            # a chain of consecutive 5-min gaps is still one run.
+            run_start_ts = latest_strong_ts
+            prev_ts = latest_strong_ts
+            for candidate_ts in reversed(run_ts[:-1]):
+                if prev_ts - candidate_ts <= PRESENCE_MAX_GAP_SECONDS:
+                    run_start_ts = candidate_ts
+                    prev_ts = candidate_ts
+                else:
+                    break
+            span_seconds = latest_strong_ts - run_start_ts
+            if span_seconds < rule.presence_min_dwell_seconds:
+                continue
+            alert_count = db.count_alerts_for_rule_since(
+                rule.name, latest_strong_ts - 3600
+            )
+            if alert_count >= rule.presence_max_alerts_per_hour:
+                logger.debug(
+                    "presence rule %r at rate cap (%d alerts in the trailing "
+                    "hour, cap %d); no hit for %s",
+                    rule.name,
+                    alert_count,
+                    rule.presence_max_alerts_per_hour,
+                    obs.mac,
+                )
+                continue
+            msg = (
+                f"Randomized device present: {obs.mac} at {obs.rssi} dBm "
+                f"for at least {span_seconds // 60} min"
+            )
+            hits.append(
+                RuleHit(
+                    rule_name=rule.name,
+                    rule_type=rule.rule_type,
+                    severity=rule.severity,
+                    message=msg,
+                    mac=obs.mac,
+                )
+            )
 
         elif rule.rule_type == "ble_device_class":
             # In-memory only — the class is a decoded property of the

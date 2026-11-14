@@ -17,11 +17,11 @@ Each `Rule`:
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | string | (required) | Unique identifier. Used as the dedup key and recorded on every emitted alert. |
-| `rule_type` | string | (required) | One of the eleven types listed below. |
+| `rule_type` | string | (required) | One of the twelve types listed below. |
 | `severity` | string | (required) | One of `low`, `med`, `high`. |
 | `enabled` | bool | `true` | When `false`, the rule is loaded but skipped during evaluation. Useful for keeping rules in the file without firing. |
 | `shadow` | bool | `false` | When `true`, the rule is evaluated in full against live traffic and counted, but **cannot produce an alert or a notification**. See [Shadow mode](#shadow-mode-measure-a-rule-before-you-enable-it). Not a synonym for `enabled: false`, which skips the rule entirely and counts nothing. |
-| `patterns` | list of string | `[]` | Depends on the rule type. See the three cases below; the old one-line rule here was wrong for ten of the eleven types. |
+| `patterns` | list of string | `[]` | Depends on the rule type. See the three cases below; the old one-line rule here was wrong for ten of the eleven types that existed then. |
 | `description` | string \| null | `null` | Free-form note. When set, it appears in the alert message body. |
 
 Pattern format depends on rule type. See the per-type sections below. Patterns are normalized at load time (e.g. MACs are lowercased and converted to colon-separated form), so `AA-BB-CC-DD-EE-FF` and `aa:bb:cc:dd:ee:ff` are equivalent.
@@ -51,7 +51,7 @@ types, and it instructed exactly the shape that hard-fails for
 
 ## The rule types
 
-⚠️ **There are eleven, and only five are documented in detail below.** This
+⚠️ **There are twelve, and only six are documented in detail below.** This
 heading read "The five rule types" until 2026-08-31, which was true when
 written and stopped being true as types were added without the doc following.
 The authoritative list is the `rule_type` literal in
@@ -65,6 +65,7 @@ is rejected at load.
 | `watchlist_ssid` | ✅ | |
 | `ble_uuid` | ✅ | |
 | `new_non_randomized_device` | ✅ | |
+| `randomized_device_present` | ✅ | added after 1.5.1 |
 | `watchlist_mac_range` | ⛔ not yet | |
 | `watchlist_ble_manufacturer_id` | ⛔ not yet | ships commented out; see [Shadow mode](#shadow-mode-measure-a-rule-before-you-enable-it) before enabling |
 | `watchlist_drone_id_prefix` | ⛔ not yet | ships commented out; capture path unverified against a real drone |
@@ -160,6 +161,55 @@ Fires the **first** time a device shows up at this location, but only if it look
   rule_type: new_non_randomized_device
   severity: low
   description: first sighting of a non-randomized device at this location
+```
+
+### `randomized_device_present`
+
+Fires when a device with a **randomized** MAC holds a **strong signal** for a **sustained** time:
+the "someone's phone is inside the house" case. People walking or driving past do not stay in range
+long enough to fire it. `new_non_randomized_device` skips randomized MACs, and the watchlist types
+only match known surveillance identifiers, so this is the rule that covers an ordinary phone.
+`patterns` must be empty.
+
+A device's *strong sightings* are its sightings with `rssi` below 0 and at or above
+`presence_min_rssi` (an `rssi` of 0 is a bogus reading and never counts). The rule fires when the
+current observation is strong and the device's strong sightings form an unbroken run, ending at the
+latest one, at least `presence_min_dwell_seconds` long. Two consecutive strong sightings more than
+**300 seconds** apart break the run, so a device that leaves and comes back starts counting again.
+The 300 is fixed in code (`PRESENCE_MAX_GAP_SECONDS`).
+
+| field | default | meaning |
+| --- | --- | --- |
+| `presence_min_rssi` | **required** | strong-signal threshold in dBm, an integer from -100 to -1 |
+| `presence_min_dwell_seconds` | `600` | how long the unbroken run must last; at least 60 |
+| `presence_max_alerts_per_hour` | `6` | once the rule has written this many alerts in the trailing hour, it stops firing until the count drops; at least 1 |
+
+Setting any of the three fields on another rule type is rejected at load.
+
+Things to know before enabling it:
+
+- **Allowlisting works by MAC.** A phone connected to a Wi-Fi network keeps one stable randomized
+  MAC for that network, so household phones can go on the allowlist as `mac` entries. A visitor's
+  phone that is not connected rotates its MAC and cannot be allowlisted.
+- **A phone that rotates its MAC while in range can fire again** under its new MAC. The per-hour cap
+  bounds that.
+- **Signal strength depends on where the sensor sits.** A phone just outside a wall near the sensor
+  can read as strong. Measure in shadow mode and set `presence_min_rssi` from what you see.
+- Dedup still applies: the same `(rule_name, mac)` pair alerts at most once per
+  `alert_dedup_window_seconds`.
+- In shadow mode nothing is written to `alerts`, so the per-hour cap never applies and the shadow
+  counts show the rule's full volume.
+
+Start it in shadow mode:
+
+```yaml
+- name: someone_inside
+  rule_type: randomized_device_present
+  severity: med
+  presence_min_rssi: -55
+  presence_min_dwell_seconds: 600
+  presence_max_alerts_per_hour: 6
+  shadow: true
 ```
 
 ## Severity tiers
@@ -283,7 +333,7 @@ Dedup state lives in the `alerts` table, so it survives restarts.
 
 ## A note on MAC randomization
 
-Lynceus does not try to defeat MAC randomization, and you should not expect it to. Modern iPhones and Android phones change their WiFi MAC for each network they connect to (sometimes for each individual connection), and they rotate their Bluetooth Low Energy address every few minutes regardless. So if the same phone walks past your Pi twice, it will most likely look like two completely different devices. Neither `watchlist_mac` nor `new_non_randomized_device` can stitch those sightings together.
+Lynceus does not try to defeat MAC randomization, and you should not expect it to. Modern iPhones and Android phones change their WiFi MAC for each network they connect to (sometimes for each individual connection), and they rotate their Bluetooth Low Energy address every few minutes regardless. So if the same phone walks past your Pi twice, it will most likely look like two completely different devices. Neither `watchlist_mac` nor `new_non_randomized_device` can stitch those sightings together. `randomized_device_present` does not stitch them either: it only asks whether one MAC stayed close for long enough.
 
 What lynceus **is** useful for:
 
