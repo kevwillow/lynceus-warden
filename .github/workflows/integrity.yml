@@ -145,11 +145,26 @@ jobs:
           mapfile -t units < <(git ls-files 'systemd/*' 'deploy/*.service')
           printf 'verifying %d unit(s)\n' "${#units[@]}"
           fail=0
+          # ⚠️ verify also loads units the RUNNER IMAGE ships. Since 2026-11-01
+          # the runner's systemd prints "Support for option CPUAccounting= has
+          # been removed and it is ignored" for three of them
+          # (xfs_scrub_all.service, system-xfs_scrub.slice, walinuxagent.service)
+          # on every run, whatever unit is being verified. Exactly that message,
+          # on a unit file under /usr/lib/systemd/system/ (or /lib/...), is printed
+          # as a notice and does not fail the gate. Any other line, including a
+          # different warning about a host unit, still fails it.
+          host_re='^(/usr)?/lib/systemd/system/[^:]+:[0-9]+: Support for option CPUAccounting= has been removed and it is ignored$'
           for u in "${units[@]}"; do
             out=$(systemd-analyze verify "$u" 2>&1 || true)
-            if [ -n "$out" ]; then
+            ours=$(printf '%s\n' "$out" | grep -vE "$host_re" | grep -v '^$' || true)
+            host=$(printf '%s\n' "$out" | grep -E "$host_re" || true)
+            if [ -n "$host" ]; then
+              echo "::notice file=$u::runner-image units warned while verifying this unit (not ours, ignored)"
+              echo "$host" | sed 's/^/    (host) /'
+            fi
+            if [ -n "$ours" ]; then
               echo "::error file=$u::systemd rejected this unit"
-              echo "$out" | sed 's/^/    /'
+              echo "$ours" | sed 's/^/    /'
               fail=1
             else
               echo "  ok: $u"
