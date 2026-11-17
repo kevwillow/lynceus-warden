@@ -19,6 +19,11 @@ is the universal icon for broadcasting, and reads as exactly the wrong thing.
 A tower plus separate arcs is two objects competing in a square and turned to
 mush below 64px; the mark was redesigned square-first after measuring that.
 
+It is now drawn low-poly, as flat shaded facets, to match the other project
+marks on gurutechnology.services: a gold shield, three navy arcs and the red
+dot. The filled facets carry three arcs at 32px where the old outline could
+only carry two.
+
 PNG rather than SVG on purpose. GitHub sanitises SVG in markdown, and text in an
 SVG depends on fonts the reader may not have. A PNG renders identically
 everywhere. Everything is drawn at SS x supersample and downsampled with LANCZOS,
@@ -29,6 +34,7 @@ Usage:
     python3 scripts/make_banner.py
 """
 import os
+import xml.etree.ElementTree as ET
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -37,7 +43,6 @@ GROUND = (13, 13, 15)                    # near-black page ground
 TEXT = (242, 240, 238)
 MUTED = (139, 134, 128)
 ACCENT = (200, 16, 46)                   # the same red Argus uses; these are siblings
-RING = (58, 58, 64)                      # cool grey for the outer arcs
 
 FONT_DIRS = ["/usr/share/fonts", "/usr/local/share/fonts", os.path.expanduser("~/.fonts")]
 FONT_PREFS = {
@@ -56,64 +61,51 @@ def font(kind, size):
     return ImageFont.load_default()
 
 
-def _shield(cx, cy, w, h, n=90):
-    """Heater shield: flat top, straight upper flanks, a curve sweeping to a tip."""
-    pts = [(cx - w, cy - h), (cx + w, cy - h)]
-    for i in range(n + 1):
-        t = i / n
-        pts.append((cx + w * (1 - t * t), cy - h + (2 * h) * (0.42 + 0.58 * t)))
-    for i in range(n + 1):
-        t = 1 - i / n
-        pts.append((cx - w * (1 - t * t), cy - h + (2 * h) * (0.42 + 0.58 * t)))
-    return pts
+# ---- the low-poly mark ------------------------------------------------------
+# The mark is docs/assets/lynceus-mark.svg, the same file gurutechnology.services
+# shows: flat shaded polygons in a 64-unit box. draw_mark reads those polygons
+# and scales them to pixels, so these PNGs cannot drift from the site's mark.
+MARK_SVG = os.path.join(os.path.dirname(__file__), "..", "docs", "assets", "lynceus-mark.svg")
 
 
-def draw_mark(d, cx, cy, r, hole=GROUND, outline=TEXT):
-    """The shield mark, centred on (cx, cy) with radius r.
+def _mark_polygons():
+    """[(rgb, [(x, y), ...]), ...] from MARK_SVG, in drawing order."""
+    polys = []
+    for el in ET.parse(MARK_SVG).iter("{http://www.w3.org/2000/svg}polygon"):
+        nums = [float(v) for v in el.get("points").replace(",", " ").split()]
+        fill = el.get("fill").lstrip("#")
+        rgb = tuple(int(fill[i:i + 2], 16) for i in (0, 2, 4))
+        polys.append((rgb, list(zip(nums[::2], nums[1::2], strict=True))))
+    if not polys:
+        raise SystemExit(f"no polygons found in {MARK_SVG}")
+    return polys
 
-    The shield is two FILLED polygons, outer in `outline` and inner in the
-    background, rather than a stroked outline. Stroking a dense polyline leaves
-    visible lumps at this scale; filling does not.
 
-    Two arcs, not three. A third was measured turning to mush at 32px, which is
-    the size that decides whether a mark works.
+def draw_mark(d, cx, cy, size):
+    """Draw the mark centred on (cx, cy), its longer side `size` pixels.
+
+    Each polygon is outlined in its own colour, so no seam shows between
+    neighbours after the LANCZOS downsample.
     """
-    lw = max(2.0, r * 0.155)
-    w, h = r * 0.96, r * 1.02
-    d.polygon(_shield(cx, cy, w, h), fill=outline)
-    d.polygon(_shield(cx, cy - lw * 0.10, w - lw * 1.25, h - lw * 0.95), fill=hole)
-
-    # ⭐ Symmetric about the vertical centre, and the arcs arrive from ABOVE.
-    # The first version swept in from the left, which was asymmetric and read
-    # as lopsided at every size.
-    #
-    # Two arcs, not three. Three measured to a smear at 32px, and 32px is the
-    # size that decides whether a mark works.
-    #
-    # ⚠️ The innermost arc used to be ACCENT and sat close to the dot, which
-    # merged the two into a red blob at small sizes. Grey arcs, one red dot,
-    # with a real gap between them.
-    by = cy + r * 0.26
-    for frac in (0.80, 0.50):
-        q = r * frac
-        d.arc([cx - q, by - q, cx + q, by + q], start=204, end=336,
-              fill=RING, width=max(3, int(r * 0.145)))
-
-    pr = r * 0.135
-    d.ellipse([cx - pr, by - pr, cx + pr, by + pr], fill=ACCENT)
+    polys = _mark_polygons()
+    xs = [x for _, pts in polys for x, _ in pts]
+    ys = [y for _, pts in polys for _, y in pts]
+    s = size / max(max(xs) - min(xs), max(ys) - min(ys))
+    mx, my = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    for rgb, pts in polys:
+        d.polygon([(cx + (x - mx) * s, cy + (y - my) * s) for x, y in pts], fill=rgb, outline=rgb)
 
 
-def make_logo(path, size=512, outline=(42, 42, 48)):
+def make_logo(path, size=512):
     """Square mark on a transparent ground, for a favicon, avatar or docs header.
 
-    Two variants ship. The default dark outline reads on light backgrounds;
-    lynceus-logo-dark.png uses the light outline for dark ones. A single mark
-    cannot do both, because the lens outline has to contrast with the page.
+    The faceted mark is filled, so one drawing reads on light and dark pages.
+    The -dark file is kept under its old name for anything that links to it.
     """
     s = size * SS
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    draw_mark(d, s / 2, s / 2, s * 0.26, hole=(0, 0, 0, 0), outline=outline)
+    draw_mark(d, s / 2, s / 2, s * 0.90)
     img.resize((size, size), Image.LANCZOS).save(path)
     return path
 
@@ -138,7 +130,7 @@ def make_banner(path, w=1280, h=320):
     pad = ww * 0.055
     r = hh * 0.180
     cx, cy = pad + r * 1.05, hh * 0.47
-    draw_mark(d, cx, cy, r)
+    draw_mark(d, cx, cy, r * 2.04)
 
     x = cx + r * 1.65
     avail = ww - x - pad                  # hard right bound; nothing may exceed it
@@ -156,10 +148,12 @@ def make_banner(path, w=1280, h=320):
     #     tests:     pytest --collect-only -q | tail -1
     #     watchlist: sqlite3 <db> "SELECT COUNT(*) FROM watchlist"
     #
-    # Measured 2026-08-22 at `bf20903`: 4,573 collected, 47 deselected.
-    # The count was left at 4,566 through #200, which added seven.
+    # Measured 2026-11-10 at `3457de9` in a clean checkout: 5,433 tests
+    # selected (64 deselected), and 41,518 records in the shipped
+    # src/lynceus/data/default_watchlist.csv (its record_count line agrees).
+    # The image had sat at 41,508 and 4,566 since before #220.
     facts = (
-        "41,508 watchlist records   ·   4,573 tests   "
+        "41,518 watchlist records   ·   5,433 tests   "
         "·   receive only   ·   runs on a Pi"
     )
 
@@ -180,7 +174,7 @@ if __name__ == "__main__":
     os.makedirs(out, exist_ok=True)
     make_banner(os.path.join(out, "lynceus-banner.png"))
     make_logo(os.path.join(out, "lynceus-logo.png"))
-    make_logo(os.path.join(out, "lynceus-logo-dark.png"), outline=TEXT)
+    make_logo(os.path.join(out, "lynceus-logo-dark.png"))
     for px in (128, 64, 32):
         make_logo(os.path.join(out, f"lynceus-logo-{px}.png"), size=px)
     import glob
