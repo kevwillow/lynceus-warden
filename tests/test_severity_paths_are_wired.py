@@ -75,43 +75,87 @@ DELEGATING = frozenset(
 )
 
 #: Match no watchlist row, so there is nothing for an override to key on. This
-#: is INHERENT, not a gap: `new_non_randomized_device` is categorical and
-#: `ble_device_class` is decoded from the advertisement itself.
-NO_WATCHLIST_ROW = frozenset({"new_non_randomized_device", "ble_device_class"})
+#: is INHERENT, not a gap: `new_non_randomized_device` is categorical,
+#: `ble_device_class` is decoded from the advertisement itself, and
+#: `randomized_device_present` consults db for its own sightings/alerts rows
+#: (never the watchlist), so an override still has nothing to key on.
+NO_WATCHLIST_ROW = frozenset(
+    {
+        "new_non_randomized_device",
+        "ble_device_class",
+        "randomized_device_present",
+    }
+)
 
 #: System-emitted by the poller at the watchful escalation site (migration 018).
 #: `evaluate` has no branch for it at all, so it is not measurable here.
 NOT_EVALUATED = frozenset({"watchful_recurrence"})
 
-#: rule_type -> (watchlist (pattern, pattern_type) or None, obs kwargs, rule patterns)
-CASES: dict[str, tuple[tuple[str, str] | None, dict, list[str]]] = {
-    "watchlist_mac": ((MAC, "mac"), {}, []),
-    "watchlist_oui": (("ac:de:48", "oui"), {}, []),
-    "watchlist_ssid": (("MyTargetNet", "ssid"), {"ssid": "MyTargetNet"}, []),
-    "watchlist_mac_range": (("ac:de:48:1/28", "mac_range"), {}, []),
-    "ble_uuid": (
-        ("0000fd5a-0000-1000-8000-00805f9b34fb", "ble_uuid"),
-        {"ble_service_uuids": ("0000fd5a-0000-1000-8000-00805f9b34fb",)},
-        [],
+#: rule_type -> the case that makes it fire once, before any override is
+#: applied: (watchlist (pattern, pattern_type) or None, obs kwargs, rule
+#: patterns, extra Rule kwargs, optional db seeder).
+class _Case(typing.NamedTuple):
+    watchlist: tuple[str, str] | None = None
+    obs_kwargs: dict = {}
+    patterns: list[str] = []
+    rule_kwargs: dict = {}
+    seed: typing.Callable | None = None
+
+
+def _seed_presence_sightings(db: Database, now_ts: int) -> None:
+    """Eleven strong sightings, 60s apart, ending at the observation's ts.
+
+    Span = 600s >= the dwell default, so `randomized_device_present`
+    fires against an empty alerts table (the control the tests below
+    need before any override can be measured).
+    """
+    db.ensure_location("default", "Default")
+    db.upsert_device(
+        mac=MAC, device_type="wifi", oui_vendor=None, is_randomized=1, now_ts=now_ts
+    )
+    for i in range(11):
+        db.insert_sighting(
+            mac=MAC,
+            ts=now_ts - (10 - i) * 60,
+            rssi=-45,
+            ssid=None,
+            location_id="default",
+        )
+
+
+CASES: dict[str, _Case] = {
+    "watchlist_mac": _Case(watchlist=(MAC, "mac")),
+    "watchlist_oui": _Case(watchlist=("ac:de:48", "oui")),
+    "watchlist_ssid": _Case(watchlist=("MyTargetNet", "ssid"), obs_kwargs={"ssid": "MyTargetNet"}),
+    "watchlist_mac_range": _Case(watchlist=("ac:de:48:1/28", "mac_range")),
+    "ble_uuid": _Case(
+        watchlist=("0000fd5a-0000-1000-8000-00805f9b34fb", "ble_uuid"),
+        obs_kwargs={"ble_service_uuids": ("0000fd5a-0000-1000-8000-00805f9b34fb",)},
     ),
-    "watchlist_ble_manufacturer_id": (
-        ("004c", "ble_manufacturer_id"),
-        {"ble_manufacturer_id": "004c"},
-        [],
+    "watchlist_ble_manufacturer_id": _Case(
+        watchlist=("004c", "ble_manufacturer_id"),
+        obs_kwargs={"ble_manufacturer_id": "004c"},
     ),
-    "watchlist_drone_id_prefix": (
-        ("1581F", "drone_id_prefix"),
-        {"drone_id_prefix": "1581FABC"},
-        [],
+    "watchlist_drone_id_prefix": _Case(
+        watchlist=("1581F", "drone_id_prefix"),
+        obs_kwargs={"drone_id_prefix": "1581FABC"},
     ),
-    "watchlist_ble_local_name": (
-        ("TrackerTag", "ble_local_name"),
-        {"ble_local_name": "TrackerTag"},
-        [],
+    "watchlist_ble_local_name": _Case(
+        watchlist=("TrackerTag", "ble_local_name"),
+        obs_kwargs={"ble_local_name": "TrackerTag"},
     ),
-    "new_non_randomized_device": (None, {}, []),
-    "ble_device_class": (None, {"ble_device_class": "find_my"}, ["find_my"]),
-    "watchful_recurrence": (None, {}, []),
+    "new_non_randomized_device": _Case(),
+    "ble_device_class": _Case(obs_kwargs={"ble_device_class": "find_my"}, patterns=["find_my"]),
+    "watchful_recurrence": _Case(),
+    "randomized_device_present": _Case(
+        obs_kwargs={"is_randomized": True, "rssi": -45},
+        rule_kwargs={
+            "presence_min_rssi": -55,
+            "presence_min_dwell_seconds": 600,
+            "presence_max_alerts_per_hour": 6,
+        },
+        seed=_seed_presence_sightings,
+    ),
 }
 
 #: Each runtime override key, and what applying it should do to a matched row
@@ -197,13 +241,15 @@ def _observation(**kw) -> DeviceObservation:
 def _evaluate(rule_type: str, overrides, tmp_path, tag: str):
     """Drive the real `evaluate` for one rule_type. Row severity is always
     'low', so a remap to 'high' is unambiguous."""
-    watchlist, obs_kwargs, patterns = CASES[rule_type]
+    case = CASES[rule_type]
     db = Database(str(tmp_path / f"{rule_type}-{tag}.db"))
     try:
-        if watchlist is not None:
+        if case.seed is not None:
+            case.seed(db, 1_700_000_000)
+        if case.watchlist is not None:
             watchlist_id, _ = db.add_watchlist(
-                pattern=watchlist[0],
-                pattern_type=watchlist[1],
+                pattern=case.watchlist[0],
+                pattern_type=case.watchlist[1],
                 severity="low",
                 description="wiring probe",
             )
@@ -212,9 +258,17 @@ def _evaluate(rule_type: str, overrides, tmp_path, tag: str):
                 {"device_category": CATEGORY, "vendor": VENDOR, "argus_record_id": ARID},
             )
         ruleset = Ruleset(
-            rules=[Rule(name="probe", rule_type=rule_type, severity="low", patterns=patterns)]
+            rules=[
+                Rule(
+                    name="probe",
+                    rule_type=rule_type,
+                    severity="low",
+                    patterns=case.patterns,
+                    **case.rule_kwargs,
+                )
+            ]
         )
-        return evaluate(ruleset, _observation(**obs_kwargs), True, db=db,
+        return evaluate(ruleset, _observation(**case.obs_kwargs), True, db=db,
                         severity_overrides=overrides)
     finally:
         db.close()

@@ -116,8 +116,16 @@ RULE_TYPE_DELEGATES_TO: dict[str, tuple[str, ...]] = {
 # rule_types that exist but consult no watchlist row at all. Listed explicitly
 # so that adding a rule_type to rules.RuleType and forgetting it here FAILS
 # rather than silently defaulting to "delegates to nothing".
+# ⚠️ "Non-delegating" is about the WATCHLIST: randomized_device_present does
+# consult db (its own sightings/alerts rows for the dwell run and rate cap),
+# but it reads no watchlist row and so grades no watchlist row's liveness.
 NON_DELEGATING_RULE_TYPES: frozenset[str] = frozenset(
-    {"new_non_randomized_device", "watchful_recurrence", "ble_device_class"}
+    {
+        "new_non_randomized_device",
+        "watchful_recurrence",
+        "ble_device_class",
+        "randomized_device_present",
+    }
 )
 
 # ⛔ rule_types the POLLER raises on its own, with NO rule in the ruleset.

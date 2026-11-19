@@ -704,6 +704,14 @@ def test_healthz_reports_unknown_liveness_as_null_not_as_a_count(tmp_path):
 # --------------------------------------------------------------------------
 
 
+#: Database reads that touch a device's own sightings/alerts rows, never the
+#: watchlist. `randomized_device_present` uses exactly these. Named one by one
+#: so a branch that ALSO reads the watchlist is still caught as delegating.
+NON_WATCHLIST_DB_READS = frozenset(
+    {"latest_strong_sighting_ts", "list_strong_sighting_ts", "count_alerts_for_rule_since"}
+)
+
+
 def _delegating_rule_types_from_evaluate_source() -> dict[str, list[str]]:
     """Parse ``rules.evaluate`` and return every ``rule_type`` whose branch
     actually consults ``db``.
@@ -738,7 +746,9 @@ def _delegating_rule_types_from_evaluate_source() -> dict[str, list[str]]:
             and isinstance(test.comparators[0], ast.Constant)
         ):
             continue
-        calls = sorted(set(re.findall(r"db\.(\w+)", ast.unparse(node.body))))
+        calls = sorted(
+            set(re.findall(r"db\.(\w+)", ast.unparse(node.body))) - NON_WATCHLIST_DB_READS
+        )
         if calls:
             found[test.comparators[0].value] = calls
     return found

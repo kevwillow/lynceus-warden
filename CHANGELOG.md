@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`randomized_device_present` rule type: a phone that stays inside the house.** Fires when a
+  randomized-MAC device holds a strong signal (`presence_min_rssi`) for an unbroken run of at least
+  `presence_min_dwell_seconds` (default 600), with no gap over 300 seconds between strong sightings.
+  `presence_max_alerts_per_hour` (default 6) caps the volume. Passers-by do not fire it, and a
+  household phone can be allowlisted by MAC because a connected phone keeps one randomized MAC per
+  network. Start it in shadow mode; see `docs/RULES.md`.
+
 ## [1.5.1] - 2026-09-17
 
 ### Fixed

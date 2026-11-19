@@ -90,6 +90,7 @@ NON_DELEGATING_RULE_TYPES = frozenset({
     "new_non_randomized_device",
     "watchful_recurrence",
     "ble_device_class",
+    "randomized_device_present",
 })
 
 
